@@ -1,0 +1,25 @@
+name: Validate checksum verification
+
+on:
+  workflow_dispatch:
+
+jobs:
+  direct-download-checksum:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: mahabaleshwars/setup-go@feature/678
+        with:
+          go-version: '1.23'
+          go-download-base-url: 'https://go.dev/dl'
+      - run: go version
+
+  manifest-path-unaffected:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: mahabaleshwars/setup-go@feature/678
+        with:
+          go-version: '1.23'
+      - run: go version
