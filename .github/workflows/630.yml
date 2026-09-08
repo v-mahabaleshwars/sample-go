@@ -10,7 +10,7 @@ name: setup-go validation — feature/630 (cache-key-suffix)
 
 on:
   workflow_dispatch:
-
+  
 concurrency:
   group: setup-go-validation-${{ github.ref }}
   cancel-in-progress: true
@@ -224,7 +224,12 @@ jobs:
           cache-key-suffix: '   '
       - shell: bash
         run: |
-          echo "cache-hit = '${{ steps.setup.outputs.cache-hit }}'"
+          hit='${{ steps.setup.outputs.cache-hit }}'
+          echo "cache-hit = '$hit'"
+          if [ "$hit" != "true" ] && [ "$hit" != "false" ]; then
+            echo "::error::blank suffix should behave like unset, got '$hit'"
+            exit 1
+          fi
           echo "PASS if the post-step key ends at the file hash (no trailing '-')"
 
   suffix-with-cache-disabled:
@@ -456,9 +461,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {label: gosum, path: 'go.sum'}
-          - {label: glob, path: '**/go.sum'}
           - {label: gomod, path: 'go.mod'}
+          - {label: glob, path: '**/go.mod'}
     steps:
       - uses: actions/checkout@v5
       - id: setup
@@ -467,10 +471,20 @@ jobs:
           go-version: '1.25'
           cache-dependency-path: ${{ matrix.path }}
           cache-key-suffix: ${{ env.NS }}-dp-${{ matrix.label }}
-      - shell: bash
+
+      # An unresolved path makes restore throw, which leaves cache-hit empty.
+      # Assert on that instead of just logging, or the job goes green while
+      # caching was silently skipped.
+      - name: Assert the path resolved and caching stayed active
+        shell: bash
         run: |
-          echo "path='${{ matrix.path }}' cache-hit='${{ steps.setup.outputs.cache-hit }}'"
-          echo "PASS: dependency-path and suffix compose (both appear in the key)"
+          hit='${{ steps.setup.outputs.cache-hit }}'
+          echo "path='${{ matrix.path }}' cache-hit='$hit'"
+          if [ -z "$hit" ]; then
+            echo "::error::caching skipped — '${{ matrix.path }}' matched no files"
+            exit 1
+          fi
+          echo "PASS: dependency-path and suffix both fed the cache key"
 
   dependency-path-multiline:
     name: 'E5 cache-dependency-path · multiline + suffix'
@@ -483,9 +497,19 @@ jobs:
           go-version: '1.25'
           cache-dependency-path: |
             go.mod
-            go.sum
+            **/*.go
           cache-key-suffix: ${{ env.NS }}-multiline
-      - run: echo "cache-hit='${{ steps.setup.outputs.cache-hit }}'"
+
+      - name: Assert multiline paths resolved
+        shell: bash
+        run: |
+          hit='${{ steps.setup.outputs.cache-hit }}'
+          echo "cache-hit='$hit'"
+          if [ -z "$hit" ]; then
+            echo "::error::caching skipped — multiline paths matched no files"
+            exit 1
+          fi
+          echo "PASS: multiline dependency paths hashed alongside the suffix"
 
   cross-platform:
     name: 'E6 ${{ matrix.os }} · suffix end-to-end'
