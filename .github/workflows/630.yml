@@ -1,0 +1,611 @@
+name: setup-go validation — feature/630 (cache-key-suffix)
+
+# Tests https://github.com/v-mahabaleshwars/setup-go/tree/feature/630
+#
+# Cache assertions rely on job ordering: a seeding job writes an entry in its
+# post step, and dependent jobs then observe hit/miss. Every cache key is
+# namespaced with github.run_id so each run starts from a clean slate.
+# NOTE: run_id in a suffix is a TEST-ONLY pattern — in real workflows a
+# high-cardinality suffix creates a new cache entry every run.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: setup-go-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NS: run-${{ github.run_id }}
+
+jobs:
+  # ==========================================================================
+  # A. NEW FEATURE — cache-key-suffix
+  # ==========================================================================
+
+  suffix-seed:
+    name: 'A1 seed · suffix=amd64 · expect MISS + save'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Go with cache-key-suffix
+        id: setup
+        uses: v-mahabaleshwars/setup-go@feature/630
+        with:
+          go-version: '1.25'
+          cache-key-suffix: ${{ env.NS }}-amd64
+
+      - name: Log resolved state
+        shell: bash
+        run: |
+          echo "::group::Resolved"
+          echo "go-version output : ${{ steps.setup.outputs.go-version }}"
+          echo "cache-hit output  : '${{ steps.setup.outputs.cache-hit }}'"
+          echo "go version        : $(go version)"
+          echo "GOCACHE           : $(go env GOCACHE)"
+          echo "GOMODCACHE        : $(go env GOMODCACHE)"
+          echo "expected suffix   : ${NS}-amd64"
+          echo "::endgroup::"
+
+      - name: Assert first run is a MISS
+        shell: bash
+        run: |
+          hit='${{ steps.setup.outputs.cache-hit }}'
+          if [ "$hit" != "false" ]; then
+            echo "::error::expected cache-hit=false on a fresh suffix, got '$hit'"
+            exit 1
+          fi
+          echo "PASS: fresh suffix produced a cache miss"
+
+      - name: Populate build cache
+        run: |
+          go build ./... || true
+          go test ./... || true
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "| A1 seed (amd64) | cache-hit=\`${{ steps.setup.outputs.cache-hit }}\` (expected \`false\`) |" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+  suffix-rehit:
+    name: 'A2 round-trip · same suffix · expect HIT'
+    needs: suffix-seed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Go with the SAME cache-key-suffix
+        id: setup
+        uses: v-mahabaleshwars/setup-go@feature/630
+        with:
+          go-version: '1.25'
+          cache-key-suffix: ${{ env.NS }}-amd64
+
+      - name: Assert restore/save round-trip across processes
+        shell: bash
+        run: |
+          hit='${{ steps.setup.outputs.cache-hit }}'
+          echo "cache-hit = '$hit'"
+          if [ "$hit" != "true" ]; then
+            echo "::error::expected cache-hit=true. The suffix did not survive"
+            echo "::error::the main→post state handoff, so the entry was never saved."
+            exit 1
+          fi
+          echo "PASS: suffixed key round-tripped between the setup and post steps"
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "| A2 round-trip | cache-hit=\`${{ steps.setup.outputs.cache-hit }}\` (expected \`true\`) |" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+  suffix-isolation:
+    name: 'A3 isolation · different suffix · expect MISS'
+    needs: suffix-seed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Identical to A1/A2 in every way EXCEPT the suffix. On main (no suffix
+      # support) this job would collide with A1's entry and report a hit.
+      - name: Setup Go with a DIFFERENT cache-key-suffix
+        id: setup
+        uses: v-mahabaleshwars/setup-go@feature/630
+        with:
+          go-version: '1.25'
+          cache-key-suffix: ${{ env.NS }}-arm64
+
+      - name: Assert suffixes do not collide
+        shell: bash
+        run: |
+          hit='${{ steps.setup.outputs.cache-hit }}'
+          echo "cache-hit = '$hit'"
+          if [ "$hit" != "false" ]; then
+            echo "::error::expected cache-hit=false. A different suffix reused"
+            echo "::error::another target's cache — isolation is broken."
+            exit 1
+          fi
+          echo "PASS: distinct suffixes map to distinct cache entries"
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "| A3 isolation | cache-hit=\`${{ steps.setup.outputs.cache-hit }}\` (expected \`false\`) |" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+  suffix-multiarch:
+    name: 'A4 realistic multi-arch · ${{ matrix.goos }}/${{ matrix.goarch }}'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {goos: linux, goarch: amd64}
+          - {goos: linux, goarch: arm64}
+          - {goos: darwin, goarch: arm64}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Go
+        id: setup
+        uses: v-mahabaleshwars/setup-go@feature/630
+        with:
+          go-version: '1.25'
+          cache-key-suffix: ${{ env.NS }}-${{ matrix.goos }}-${{ matrix.goarch }}
+
+      - name: Cross-compile
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          echo "::group::Cross-compiling ${GOOS}/${GOARCH}"
+          go build -v ./... || true
+          echo "::endgroup::"
+
+      - name: Assert every leg missed independently
+        shell: bash
+        run: |
+          hit='${{ steps.setup.outputs.cache-hit }}'
+          if [ "$hit" != "false" ]; then
+            echo "::error::${{ matrix.goos }}/${{ matrix.goarch }} unexpectedly hit"
+            exit 1
+          fi
+          echo "PASS: ${{ matrix.goos }}/${{ matrix.goarch }} has its own entry"
+
+      # In the POST step of every leg you should see:
+      #   Cache saved with the key: setup-go-Linux-x64-<img>-go-<v>-<hash>-<ns>-<goos>-<goarch>
+      # On main, exactly ONE leg saves and the others log
+      #   "Cache hit occurred on the primary key ..., not saving cache."
+
+  # ==========================================================================
+  # B. BACKWARD COMPATIBILITY
+  # ==========================================================================
+
+  suffix-omitted:
+    name: 'B1 no suffix · key format unchanged'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Go without cache-key-suffix
+        id: setup
+        uses: v-mahabaleshwars/setup-go@feature/630
+        with:
+          go-version: '1.25'
+
+      - name: Assert action still works and caching is active
+        shell: bash
+        run: |
+          hit='${{ steps.setup.outputs.cache-hit }}'
+          echo "cache-hit = '$hit'"
+          if [ "$hit" != "true" ] && [ "$hit" != "false" ]; then
+            echo "::error::cache-hit should be true/false when caching is on, got '$hit'"
+            exit 1
+          fi
+          go version
+          echo "PASS: omitting the input leaves caching functional"
+          echo "NOTE: confirm the post step key has NO trailing suffix segment:"
+          echo "      setup-go-Linux-x64-<ImageOS>-go-<version>-<hash>"
+
+  suffix-blank:
+    name: 'B2 whitespace-only suffix · treated as unset'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - id: setup
+        uses: v-mahabaleshwars/setup-go@feature/630
+        with:
+          go-version: '1.25'
+          cache-key-suffix: '   '
+      - shell: bash
+        run: |
+          echo "cache-hit = '${{ steps.setup.outputs.cache-hit }}'"
+          echo "PASS if the post-step key ends at the file hash (no trailing '-')"
+
+  suffix-with-cache-disabled:
+    name: 'B3 cache:false · suffix inert'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - id: setup
+        uses: v-mahabaleshwars/setup-go@feature/630
+        with:
+          go-version: '1.25'
+          cache: false
+          cache-key-suffix: ${{ env.NS }}-ignored
+      - shell: bash
+        run: |
+          hit='${{ steps.setup.outputs.cache-hit }}'
+          if [ -n "$hit" ]; then
+            echo "::error::cache-hit should be empty when cache:false, got '$hit'"
+            exit 1
+          fi
+          go version
+          echo "PASS: suffix ignored entirely when caching is disabled"
+
+  # ==========================================================================
+  # C. NEGATIVE / VALIDATION
+  # ==========================================================================
+
+  suffix-invalid-comma:
+    name: 'C1 comma in suffix · warn, do not fail'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Go with an illegal suffix
+        id: setup
+        uses: v-mahabaleshwars/setup-go@feature/630
+        with:
+          go-version: '1.25'
+          cache-key-suffix: 'linux,arm64'
+
+      # Validation throws before cache-hit is ever set, so the output stays
+      # empty while main.ts downgrades the error to a warning.
+      - name: Assert graceful degradation
+        shell: bash
+        run: |
+          hit='${{ steps.setup.outputs.cache-hit }}'
+          echo "cache-hit = '$hit' (expected empty)"
+          if [ -n "$hit" ]; then
+            echo "::error::expected caching to be skipped, got cache-hit='$hit'"
+            exit 1
+          fi
+          go version
+          echo "PASS: invalid suffix skipped caching without failing the job"
+          echo "MANUALLY CONFIRM the setup step logged:"
+          echo "  Restore cache failed: The 'cache-key-suffix' input cannot contain commas"
+          echo "IF the cache service actually accepts commas, this check is"
+          echo "over-strict and should become a warning instead of a throw."
+
+  suffix-too-long:
+    name: 'C2 oversized suffix · 512-char guard'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - id: setup
+        uses: v-mahabaleshwars/setup-go@feature/630
+        with:
+          go-version: '1.25'
+          cache-key-suffix: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+      - shell: bash
+        run: |
+          hit='${{ steps.setup.outputs.cache-hit }}'
+          if [ -n "$hit" ]; then
+            echo "::error::expected caching to be skipped, got '$hit'"
+            exit 1
+          fi
+          go version
+          echo "PASS: oversized key rejected, job still green"
+
+  # ==========================================================================
+  # D. architecture INPUT IN THE CACHE KEY (issue #749)
+  # ==========================================================================
+
+  arch-seed-x64:
+    name: 'D1 seed · Windows default arch'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - id: setup
+        uses: v-mahabaleshwars/setup-go@feature/630
+        with:
+          go-version: '1.25'
+          cache-key-suffix: ${{ env.NS }}-archtest
+      - shell: bash
+        run: |
+          echo "GOARCH = $(go env GOARCH)"
+          echo "cache-hit = '${{ steps.setup.outputs.cache-hit }}'"
+      - run: go build ./...
+
+  arch-386-isolated:
+    name: 'D2 architecture:386 · expect MISS (regression test for #749)'
+    needs: arch-seed-x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Same suffix, same version, same go.mod as D1 — ONLY architecture
+      # differs. On main this reports a hit, silently sharing one cache entry
+      # between a 386 and an amd64 toolchain.
+      - id: setup
+        uses: v-mahabaleshwars/setup-go@feature/630
+        with:
+          go-version: '1.25'
+          architecture: '386'
+          cache-key-suffix: ${{ env.NS }}-archtest
+
+      - name: Assert 386 toolchain and isolated cache
+        shell: bash
+        run: |
+          arch="$(go env GOARCH)"
+          hit='${{ steps.setup.outputs.cache-hit }}'
+          echo "GOARCH    = $arch"
+          echo "cache-hit = '$hit'"
+          if [ "$arch" != "386" ]; then
+            echo "::error::expected GOARCH=386, got '$arch'"
+            exit 1
+          fi
+          if [ "$hit" != "false" ]; then
+            echo "::error::386 reused the amd64 cache — issue #749 not fixed"
+            exit 1
+          fi
+          echo "PASS: architecture input now isolates the cache key"
+
+  # ==========================================================================
+  # E. EXISTING FEATURES — regression coverage
+  # ==========================================================================
+
+  version-syntax:
+    name: 'E1 version syntax · ${{ matrix.label }}'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {label: exact, spec: '1.25.0'}
+          - {label: minor, spec: '1.24'}
+          - {label: caret, spec: '^1.24.0'}
+          - {label: tilde, spec: '~1.24.1'}
+          - {label: range, spec: '>=1.22.0 <1.25.0'}
+          - {label: wildcard, spec: '1.25.x'}
+          - {label: stable, spec: 'stable'}
+          - {label: oldstable, spec: 'oldstable'}
+    steps:
+      - uses: actions/checkout@v5
+      - id: setup
+        uses: v-mahabaleshwars/setup-go@feature/630
+        with:
+          go-version: ${{ matrix.spec }}
+          cache-key-suffix: ${{ env.NS }}-${{ matrix.label }}
+      - shell: bash
+        run: |
+          echo "::group::${{ matrix.label }} → ${{ matrix.spec }}"
+          echo "resolved  : ${{ steps.setup.outputs.go-version }}"
+          echo "go version: $(go version)"
+          echo "cache-hit : '${{ steps.setup.outputs.cache-hit }}'"
+          echo "::endgroup::"
+          test -n "${{ steps.setup.outputs.go-version }}" || {
+            echo "::error::go-version output was empty"; exit 1; }
+
+  version-file:
+    name: 'E2 go-version-file · ${{ matrix.file }}'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        file: [go.mod, .go-version, .tool-versions, go.work]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Materialize ${{ matrix.file }}
+        shell: bash
+        run: |
+          case "${{ matrix.file }}" in
+            .go-version)    echo "1.24.5" > .go-version ;;
+            .tool-versions) echo "golang 1.24.5" > .tool-versions ;;
+            go.work)        printf 'go 1.24.5\n\nuse .\n' > go.work ;;
+            go.mod)         echo "using committed go.mod:"; cat go.mod ;;
+          esac
+          echo "::group::${{ matrix.file }}"; cat "${{ matrix.file }}"; echo "::endgroup::"
+
+      - id: setup
+        uses: v-mahabaleshwars/setup-go@feature/630
+        with:
+          go-version-file: ${{ matrix.file }}
+          cache-key-suffix: ${{ env.NS }}-vf-${{ matrix.file }}
+
+      - shell: bash
+        run: |
+          echo "resolved: ${{ steps.setup.outputs.go-version }}"
+          go version
+
+      - name: Clean up generated files
+        if: always()
+        shell: bash
+        run: rm -f .go-version .tool-versions go.work
+
+  check-latest:
+    name: 'E3 check-latest · ${{ matrix.check }}'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [true, false]
+    steps:
+      - uses: actions/checkout@v5
+      - id: setup
+        uses: v-mahabaleshwars/setup-go@feature/630
+        with:
+          go-version: '1.24'
+          check-latest: ${{ matrix.check }}
+          cache-key-suffix: ${{ env.NS }}-cl-${{ matrix.check }}
+      - run: |
+          echo "check-latest=${{ matrix.check }} → ${{ steps.setup.outputs.go-version }}"
+          go version
+
+  dependency-path:
+    name: 'E4 cache-dependency-path · ${{ matrix.label }}'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {label: gosum, path: 'go.sum'}
+          - {label: glob, path: '**/go.sum'}
+          - {label: gomod, path: 'go.mod'}
+    steps:
+      - uses: actions/checkout@v5
+      - id: setup
+        uses: v-mahabaleshwars/setup-go@feature/630
+        with:
+          go-version: '1.25'
+          cache-dependency-path: ${{ matrix.path }}
+          cache-key-suffix: ${{ env.NS }}-dp-${{ matrix.label }}
+      - shell: bash
+        run: |
+          echo "path='${{ matrix.path }}' cache-hit='${{ steps.setup.outputs.cache-hit }}'"
+          echo "PASS: dependency-path and suffix compose (both appear in the key)"
+
+  dependency-path-multiline:
+    name: 'E5 cache-dependency-path · multiline + suffix'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - id: setup
+        uses: v-mahabaleshwars/setup-go@feature/630
+        with:
+          go-version: '1.25'
+          cache-dependency-path: |
+            go.mod
+            go.sum
+          cache-key-suffix: ${{ env.NS }}-multiline
+      - run: echo "cache-hit='${{ steps.setup.outputs.cache-hit }}'"
+
+  cross-platform:
+    name: 'E6 ${{ matrix.os }} · suffix end-to-end'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - id: setup
+        uses: v-mahabaleshwars/setup-go@feature/630
+        with:
+          go-version: '1.25'
+          cache-key-suffix: ${{ env.NS }}-${{ matrix.os }}
+      - shell: bash
+        run: |
+          echo "::group::${{ matrix.os }}"
+          go version
+          echo "GOCACHE    : $(go env GOCACHE)"
+          echo "GOMODCACHE : $(go env GOMODCACHE)"
+          echo "cache-hit  : '${{ steps.setup.outputs.cache-hit }}'"
+          echo "::endgroup::"
+      - run: go build ./...
+
+  download-base-url:
+    name: 'E7 go-download-base-url'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - id: setup
+        uses: v-mahabaleshwars/setup-go@feature/630
+        with:
+          go-version: '1.24.5'
+          go-download-base-url: 'https://go.dev/dl'
+          cache-key-suffix: ${{ env.NS }}-baseurl
+      - run: |
+          go version
+          echo "resolved: ${{ steps.setup.outputs.go-version }}"
+
+  outputs-contract:
+    name: 'E8 outputs · go-version + cache-hit'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - id: setup
+        uses: v-mahabaleshwars/setup-go@feature/630
+        with:
+          go-version: '1.25'
+          cache-key-suffix: ${{ env.NS }}-outputs
+      - shell: bash
+        run: |
+          v='${{ steps.setup.outputs.go-version }}'
+          h='${{ steps.setup.outputs.cache-hit }}'
+          echo "go-version='$v' cache-hit='$h'"
+          echo "$v" | grep -Eq '^[0-9]+\.[0-9]+(\.[0-9]+)?' || {
+            echo "::error::malformed go-version output '$v'"; exit 1; }
+          [ "$h" = "true" ] || [ "$h" = "false" ] || {
+            echo "::error::cache-hit must be true/false, got '$h'"; exit 1; }
+          echo "PASS: output contract intact"
+
+  # ==========================================================================
+  # F. REPORT
+  # ==========================================================================
+
+  report:
+    name: 'Report'
+    needs:
+      - suffix-seed
+      - suffix-rehit
+      - suffix-isolation
+      - suffix-multiarch
+      - suffix-omitted
+      - suffix-blank
+      - suffix-with-cache-disabled
+      - suffix-invalid-comma
+      - suffix-too-long
+      - arch-seed-x64
+      - arch-386-isolated
+      - version-syntax
+      - version-file
+      - check-latest
+      - dependency-path
+      - dependency-path-multiline
+      - cross-platform
+      - download-base-url
+      - outputs-contract
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Aggregate
+        run: |
+          {
+            echo "## setup-go feature/630 validation"
+            echo ""
+            echo "Namespace: \`${NS}\`"
+            echo ""
+            echo "| Group | Result |"
+            echo "|---|---|"
+            echo "| A · cache-key-suffix core | ${{ needs.suffix-seed.result }} / ${{ needs.suffix-rehit.result }} / ${{ needs.suffix-isolation.result }} |"
+            echo "| A4 · multi-arch matrix | ${{ needs.suffix-multiarch.result }} |"
+            echo "| B · backward compatibility | ${{ needs.suffix-omitted.result }} / ${{ needs.suffix-blank.result }} / ${{ needs.suffix-with-cache-disabled.result }} |"
+            echo "| C · validation guards | ${{ needs.suffix-invalid-comma.result }} / ${{ needs.suffix-too-long.result }} |"
+            echo "| D · architecture in key (#749) | ${{ needs.arch-386-isolated.result }} |"
+            echo "| E1 · version syntax | ${{ needs.version-syntax.result }} |"
+            echo "| E2 · go-version-file | ${{ needs.version-file.result }} |"
+            echo "| E3 · check-latest | ${{ needs.check-latest.result }} |"
+            echo "| E4/E5 · dependency-path | ${{ needs.dependency-path.result }} / ${{ needs.dependency-path-multiline.result }} |"
+            echo "| E6 · cross-platform | ${{ needs.cross-platform.result }} |"
+            echo "| E7 · download base url | ${{ needs.download-base-url.result }} |"
+            echo "| E8 · outputs | ${{ needs.outputs-contract.result }} |"
+            echo ""
+            echo "### Manual log checks"
+            echo "- A4 post steps: every leg logs \`Cache saved with the key: ...-<goos>-<goarch>\`"
+            echo "- C1 setup step: \`Restore cache failed: ... cannot contain commas\`"
+            echo "- B1 post step: key ends at the file hash, no trailing segment"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail if any job failed
+        if: contains(needs.*.result, 'failure')
+        run: |
+          echo "::error::one or more validation jobs failed"
+          exit 1
