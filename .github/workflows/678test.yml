@@ -1,0 +1,25 @@
+name: 678 test
+
+on:
+  workflow_dispatch:
+    
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # Bootstrap only — any 1.21+ toolchain can switch to another one
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.21'
+
+      - name: Build with a proxy-provided toolchain
+        env:
+          # setup-go exports GOTOOLCHAIN=local to avoid surprise switches,
+          # so override it here to opt into toolchain download
+          GOTOOLCHAIN: go1.25.1          # or `auto` to honour the go.mod directive
+          GOPROXY: https://proxy.golang.org,direct
+        run: |
+          go version                     # -> go1.25.1, fetched from the proxy
+          go build ./...
