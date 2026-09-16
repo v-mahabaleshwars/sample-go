@@ -12,35 +12,50 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: mahabaleshwars/setup-go@feature/54-export-env-variables
+      - uses: v-mahabaleshwars/setup-go@feature/54-export-env-variables
         id: setup-go
         with:
           go-version: '1.25.5'
+          cache: false
 
-      - name: Print outputs
+      - name: Compare outputs against go env
+        shell: bash
+        env:
+          GO_VERSION: ${{ steps.setup-go.outputs.go-version }}
+          GO_PATH: ${{ steps.setup-go.outputs.go-path }}
+          GO_BIN: ${{ steps.setup-go.outputs.go-bin }}
+          GO_BIN_PATH: ${{ steps.setup-go.outputs.go-bin-path }}
+          GO_ROOT: ${{ steps.setup-go.outputs.go-root }}
+          GO_CACHE: ${{ steps.setup-go.outputs.go-cache }}
+          GO_MOD_CACHE: ${{ steps.setup-go.outputs.go-mod-cache }}
+          GO_OS: ${{ steps.setup-go.outputs.go-os }}
+          GO_ARCH: ${{ steps.setup-go.outputs.go-arch }}
+          GO_TOOL_DIR: ${{ steps.setup-go.outputs.go-tool-dir }}
+        run: |
+          failed=0
+          check() {
+            if [ "$2" = "$3" ]; then
+              printf 'ok    %-11s %s\n' "$1" "$3"
+            else
+              printf 'FAIL  %-11s go env=[%s] output=[%s]\n' "$1" "$2" "$3"
+              failed=1
+            fi
+          }
+          echo "go-version  = [$GO_VERSION]"
+          echo "go-bin-path = [$GO_BIN_PATH]"
+          check GOPATH     "$(go env GOPATH)"     "$GO_PATH"
+          check GOBIN      "$(go env GOBIN)"      "$GO_BIN"
+          check GOROOT     "$(go env GOROOT)"     "$GO_ROOT"
+          check GOCACHE    "$(go env GOCACHE)"    "$GO_CACHE"
+          check GOMODCACHE "$(go env GOMODCACHE)" "$GO_MOD_CACHE"
+          check GOOS       "$(go env GOOS)"       "$GO_OS"
+          check GOARCH     "$(go env GOARCH)"     "$GO_ARCH"
+          check GOTOOLDIR  "$(go env GOTOOLDIR)"  "$GO_TOOL_DIR"
+          exit $failed
+
+      - name: go install lands on the PATH
         shell: bash
         run: |
-          echo "go-version:   ${{ steps.setup-go.outputs.go-version }}"
-          echo "go-path:      ${{ steps.setup-go.outputs.go-path }}"
-          echo "go-bin:       '${{ steps.setup-go.outputs.go-bin }}'"
-          echo "go-bin-path:  ${{ steps.setup-go.outputs.go-bin-path }}"
-          echo "go-root:      ${{ steps.setup-go.outputs.go-root }}"
-          echo "go-cache:     ${{ steps.setup-go.outputs.go-cache }}"
-          echo "go-mod-cache: ${{ steps.setup-go.outputs.go-mod-cache }}"
-
-      - name: Verify against go env
-        shell: bash
-        run: |
-          set -euo pipefail
-          [ "$(go env GOPATH)"     = "${{ steps.setup-go.outputs.go-path }}" ]
-          [ "$(go env GOROOT)"     = "${{ steps.setup-go.outputs.go-root }}" ]
-          [ "$(go env GOCACHE)"    = "${{ steps.setup-go.outputs.go-cache }}" ]
-          [ "$(go env GOMODCACHE)" = "${{ steps.setup-go.outputs.go-mod-cache }}" ]
-          echo "outputs match go env"
-
-      - name: Verify go-bin-path is usable
-        shell: bash
-        run: |
-          set -euo pipefail
+          set -eu
           go install golang.org/x/tools/cmd/stringer@latest
-          ls "${{ steps.setup-go.outputs.go-bin-path }}/stringer"*
+          command -v stringer
