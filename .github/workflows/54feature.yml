@@ -27,7 +27,6 @@ jobs:
           echo "go-root:      ${{ steps.setup-go.outputs.go-root }}"
           echo "go-cache:     ${{ steps.setup-go.outputs.go-cache }}"
           echo "go-mod-cache: ${{ steps.setup-go.outputs.go-mod-cache }}"
-          echo "GOOS/GOARCH:  ${{ fromJSON(steps.setup-go.outputs.go-env).GOOS }}/${{ fromJSON(steps.setup-go.outputs.go-env).GOARCH }}"
 
       - name: Verify against go env
         shell: bash
