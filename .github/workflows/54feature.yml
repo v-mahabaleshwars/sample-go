@@ -55,7 +55,15 @@ jobs:
 
       - name: go install lands on the PATH
         shell: bash
+        env:
+          GO_BIN_PATH: ${{ steps.setup-go.outputs.go-bin-path }}
         run: |
           set -eu
-          go install golang.org/x/tools/cmd/stringer@latest
-          command -v stringer
+          export GOWORK=off
+          mkdir -p tool-check && cd tool-check
+          printf 'package main\nfunc main() { println("ok") }\n' > main.go
+          go mod init example.com/hello
+          go install .
+          echo "go-bin-path = [$GO_BIN_PATH]"
+          command -v hello
+          hello
