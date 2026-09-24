@@ -1,0 +1,73 @@
+name: Test uppercase Go env outputs
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  print:
+    name: Print uppercase outputs
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Run local setup-go
+        id: setup
+        uses: v-mahabaleshwars/setup-go@fix/791-output-variables
+        with:
+          go-version: '1.26'
+          cache: false
+
+      - name: Print uppercase outputs
+        run: |
+          echo "GOPATH=${{ steps.setup.outputs.GOPATH }}"
+          echo "GOBIN=${{ steps.setup.outputs.GOBIN }}"
+          echo "GOROOT=${{ steps.setup.outputs.GOROOT }}"
+          echo "GOCACHE=${{ steps.setup.outputs.GOCACHE }}"
+          echo "GOMODCACHE=${{ steps.setup.outputs.GOMODCACHE }}"
+          echo "GOOS=${{ steps.setup.outputs.GOOS }}"
+          echo "GOARCH=${{ steps.setup.outputs.GOARCH }}"
+          echo "GOTOOLDIR=${{ steps.setup.outputs.GOTOOLDIR }}"
+
+  validate:
+    name: Validate uppercase outputs
+    needs: print
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Run local setup-go
+        id: setup
+        uses: v-mahabaleshwars/setup-go@fix/791-output-variables
+        with:
+          go-version: '1.26'
+          cache: false
+
+      - name: Verify uppercase outputs against go env
+        env:
+          OUTPUT_GOPATH: ${{ steps.setup.outputs.GOPATH }}
+          OUTPUT_GOBIN: ${{ steps.setup.outputs.GOBIN }}
+          OUTPUT_GOROOT: ${{ steps.setup.outputs.GOROOT }}
+          OUTPUT_GOCACHE: ${{ steps.setup.outputs.GOCACHE }}
+          OUTPUT_GOMODCACHE: ${{ steps.setup.outputs.GOMODCACHE }}
+          OUTPUT_GOOS: ${{ steps.setup.outputs.GOOS }}
+          OUTPUT_GOARCH: ${{ steps.setup.outputs.GOARCH }}
+          OUTPUT_GOTOOLDIR: ${{ steps.setup.outputs.GOTOOLDIR }}
+        run: |
+          failed=0
+          for name in GOPATH GOBIN GOROOT GOCACHE GOMODCACHE GOOS GOARCH GOTOOLDIR; do
+            got="$(printenv "OUTPUT_$name" || true)"
+            want="$(go env "$name")"
+            echo "${name}: ${got}"
+            if [ "$got" != "$want" ]; then
+              echo "  FAIL: expected from go env ${name}: ${want}"
+              failed=1
+            else
+              echo "  PASS"
+            fi
+          done
+          exit "$failed"
