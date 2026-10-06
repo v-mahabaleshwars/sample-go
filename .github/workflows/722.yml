@@ -9,12 +9,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           # cache: true (default)
 
       # Any second call to setup-go with cache enabled triggers the issue
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
