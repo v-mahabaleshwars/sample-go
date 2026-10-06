@@ -1,0 +1,20 @@
+name: 722 issue replicated
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          # cache: true (default)
+
+      # Any second call to setup-go with cache enabled triggers the issue
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
