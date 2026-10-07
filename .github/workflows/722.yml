@@ -1,24 +1,46 @@
-name: 722 issue replicated
+name: Reproduce duplicate Go cache restore
 
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  build:
-    strategy:
-      matrix:
-        os: ['ubuntu-latest', 'windows-latest','macos-latest']
-    runs-on: ${{matrix.os}}
+  reproduce:
+    runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: true
+      - name: Create a stable test module
+        shell: bash
+        run: |
+          mkdir -p .setup-go-repro
+          cat > .setup-go-repro/go.mod <<'EOF'
+          module example.com/setup-go-repro
 
-      # Any second call to setup-go with cache enabled triggers the issue
-      - uses: actions/setup-go@v7
+          go 1.24.0
+
+          require golang.org/x/text v0.22.0
+          EOF
+
+      - name: First setup-go — restore cache
+        uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: '1.24.5'
           cache: true
+          cache-dependency-path: .setup-go-repro/go.mod
+
+      - name: Populate module and build caches
+        working-directory: .setup-go-repro
+        run: |
+          go mod download
+          go build golang.org/x/text/language
+
+      - name: Second setup-go — restore the same cache again
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.24.5'
+          cache: true
+          cache-dependency-path: .setup-go-repro/go.mod
