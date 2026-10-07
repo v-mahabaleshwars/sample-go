@@ -10,14 +10,15 @@ jobs:
         os: ['ubuntu-latest', 'windows-latest','macos-latest']
     runs-on: ${{matrix.os}}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          # cache: true (default)
+          cache: true
 
       # Any second call to setup-go with cache enabled triggers the issue
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache: true
