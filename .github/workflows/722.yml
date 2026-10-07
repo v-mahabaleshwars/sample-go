@@ -35,7 +35,7 @@ jobs:
       - name: Populate module and build caches
         working-directory: .setup-go-repro
         run: |
-          go mod download
+          go mod download golang.org/x/text
           go build golang.org/x/text/language
 
       - name: Second setup-go — restore the same cache again
